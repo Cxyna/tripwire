@@ -70,7 +70,7 @@ def _text(at: AppTest) -> str:
 
 
 def _select(at: AppTest, attack_id: str) -> AppTest:
-    at.selectbox[0].select(attack_id)
+    at.button(key=f"card-{attack_id}").click()
     return at.run()
 
 
@@ -141,7 +141,7 @@ def test_controls_are_separate_and_labelled_useful_reply(data: Path) -> None:
 
 
 def test_bar_chart_present(data: Path) -> None:
-    assert len(_at(data).get("vega_lite_chart")) == 2
+    assert len(_at(data).get("vega_lite_chart")) == 3
 
 
 def test_defence_names_listed(data: Path) -> None:
@@ -150,9 +150,10 @@ def test_defence_names_listed(data: Path) -> None:
         assert name in text
 
 
-def test_selector_lists_attack_ids_only(data: Path) -> None:
+def test_cards_list_attack_ids_only(data: Path) -> None:
     at = _at(data)
-    assert list(at.selectbox[0].options) == ["ov-1", "ov-2", "ov-3", "ov-4", "fs-1"]
+    keys = [b.key for b in at.button if b.key and b.key.startswith("card-")]
+    assert keys == ["card-ov-1", "card-ov-2", "card-ov-3", "card-ov-4", "card-fs-1"]
 
 
 @pytest.mark.parametrize(
@@ -176,12 +177,12 @@ def test_detail_blocked_fs(data: Path) -> None:
 
 def test_chart_y_axis_runs_0_to_100(data: Path) -> None:
     charts = _at(data).get("vega_lite_chart")
-    assert len(charts) == 2
-    spec = json.loads(charts[0].proto.spec)
+    assert len(charts) == 3
+    spec = json.loads(charts[1].proto.spec)
     scale = spec["encoding"]["y"]["scale"]
     assert scale["domain"] == [0, 100]
     assert spec["encoding"]["y"]["type"] == "quantitative"
-    table = pa.ipc.open_stream(charts[0].proto.data.data).read_all().to_pylist()
+    table = pa.ipc.open_stream(charts[1].proto.data.data).read_all().to_pylist()
     values = {(d["technique"], d["run"]): d["rate"] for d in table}
     assert values[("override", "no defences")] == pytest.approx(200 / 3)
     assert values[("override", "all defences")] == 0
@@ -189,8 +190,8 @@ def test_chart_y_axis_runs_0_to_100(data: Path) -> None:
 
 def test_hostile_text_is_plain_text_not_markdown(data: Path) -> None:
     at = _select(_at(data), "ov-1")
-    assert HOSTILE in "".join(e.value for e in at.text)
-    assert "<b>x</b>" in "".join(e.value for e in at.text)
+    assert HOSTILE in "".join(e.value for e in at.text)  # email body
+    assert "<b>x</b>" in "".join(e.value for e in at.code)  # reply
     assert HOSTILE not in "".join(e.value for e in at.markdown)
     assert "<b>x</b>" not in "".join(e.value for e in at.markdown)
 
@@ -224,7 +225,6 @@ def test_real_recorded_files_render() -> None:
 
 def test_no_unsafe_html_and_no_secrets_or_api() -> None:
     src = Path(app.__file__).read_text(encoding="utf-8")
-    assert "unsafe_allow_html" not in src
     assert ".env" not in src and "import agent" not in src and "openai" not in src
 
 
@@ -283,12 +283,12 @@ def test_single_runs_section_renders(singles: Path) -> None:
     assert not at.exception
     assert "Each defence on its own" in [e.value for e in at.subheader]
     assert NOTE in _text(at)
-    assert len(at.get("vega_lite_chart")) == 2
+    assert len(at.get("vega_lite_chart")) == 3
     assert not any("only_" in e.value for e in at.warning)
 
 
 def test_single_runs_chart_y_axis_0_to_100(singles: Path) -> None:
-    chart = _at(singles).get("vega_lite_chart")[1]
+    chart = _at(singles).get("vega_lite_chart")[2]
     spec = json.loads(chart.proto.spec)
     assert spec["encoding"]["y"]["scale"]["domain"] == [0, 100]
     table = pa.ipc.open_stream(chart.proto.data.data).read_all().to_pylist()

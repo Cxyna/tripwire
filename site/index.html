@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tripwire: recorded prompt-injection results</title>
+<meta name="description" content="Playback of recorded Tripwire runs: 20 injection attacks against an email assistant, with and without defences.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#headline">Skip to results</a>
+
+<header class="nav glass">
+  <a class="brand" href="#top">Tripwire</a>
+  <nav aria-label="Sections">
+    <a href="#headline">Result</a>
+    <a href="#pipeline">Pipeline</a>
+    <a href="#heatmap">Heatmap</a>
+    <a href="#defences">Defences</a>
+    <a href="#limits">Limits</a>
+  </nav>
+</header>
+
+<main id="top">
+  <section class="hero" aria-labelledby="h1">
+    <div class="grid-bg" aria-hidden="true"></div>
+    <div class="wrap">
+      <p class="eyebrow">Recorded results, played back</p>
+      <h1 id="h1">
+        <span class="line"><span>Hidden instructions</span></span>
+        <span class="line"><span>in an email.</span></span>
+        <span class="line accent"><span>Did the assistant obey?</span></span>
+      </h1>
+      <p class="lede">Twenty hand-written injection attacks, six ordinary control emails, one model, seven recorded runs. Nothing on this page calls an API: every number is read from the saved results.</p>
+      <a class="btn" href="#headline">See the result</a>
+    </div>
+  </section>
+
+  <section id="headline" class="wrap reveal" aria-labelledby="h-head">
+    <h2 id="h-head">With no defences, most attacks worked. With all of them, two did.</h2>
+    <div class="tiles" id="tiles"></div>
+    <p class="note" id="headline-note"></p>
+  </section>
+
+  <section id="pipeline" class="wrap reveal" aria-labelledby="h-pipe">
+    <h2 id="h-pipe">How a run works</h2>
+    <figure class="panel pipe">
+      <svg viewBox="0 0 760 170" role="img" aria-labelledby="pipe-title pipe-desc">
+        <title id="pipe-title">Pipeline: attack library, assistant, scorer, verdict</title>
+        <desc id="pipe-desc">Each attack email goes to the assistant, the reply goes to the scorer, and the scorer gives a verdict.</desc>
+        <path id="pipe-path" class="pipe-line" d="M110 85 H650" />
+        <g class="node"><rect x="10" y="50" width="130" height="70" rx="12"/><text x="75" y="80">Attack</text><text x="75" y="100">library</text></g>
+        <g class="node"><rect x="215" y="50" width="130" height="70" rx="12"/><text x="280" y="80">Assistant</text><text x="280" y="100">(+ defences)</text></g>
+        <g class="node"><rect x="420" y="50" width="130" height="70" rx="12"/><text x="485" y="80">Scorer</text><text x="485" y="100">marker / canary</text></g>
+        <g class="node"><rect x="620" y="50" width="130" height="70" rx="12"/><text x="685" y="80">Verdict</text><text x="685" y="100">success / blocked</text></g>
+        <circle class="packet" r="7" cx="0" cy="0">
+          <animateMotion dur="5s" repeatCount="indefinite" path="M75 85 H685" />
+        </circle>
+      </svg>
+      <figcaption>Illustrative. The packet is decoration, not a measurement.</figcaption>
+    </figure>
+  </section>
+
+  <section id="heatmap" class="wrap reveal" aria-labelledby="h-heat">
+    <h2 id="h-heat">Every attack, every run</h2>
+    <p class="note">Choose a recorded run. Click a column or cell to select it, or an attack name to read the email and replies.</p>
+    <div class="seg" id="seg" role="radiogroup" aria-label="Recorded run"></div>
+    <div class="counts" id="counts" aria-live="polite"></div>
+    <div class="panel heat-wrap">
+      <table class="heat" id="heat"></table>
+    </div>
+    <ul class="legend" id="legend"></ul>
+  </section>
+
+  <section id="defences" class="wrap reveal" aria-labelledby="h-def">
+    <h2 id="h-def">Each defence on its own</h2>
+    <div class="panel" id="bars"></div>
+    <p class="note" id="single-note"></p>
+  </section>
+
+  <section id="limits" class="wrap reveal" aria-labelledby="h-lim">
+    <h2 id="h-lim">Honest limits</h2>
+    <ul class="limits" id="caveats"></ul>
+    <h3>Denominators</h3>
+    <div class="panel table-wrap">
+      <table class="plain" id="denoms"></table>
+    </div>
+    <p class="note" id="noreply-note"></p>
+  </section>
+</main>
+
+<footer class="wrap foot"><p>Static playback of recorded runs. No network requests are made by this page.</p></footer>
+
+<div class="tip" id="tip" role="tooltip" hidden></div>
+
+<div class="scrim" id="scrim" hidden></div>
+<aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="dr-title" aria-hidden="true">
+  <div class="dr-head">
+    <h2 id="dr-title">Attack</h2>
+    <button type="button" class="btn ghost" id="dr-close">Close</button>
+  </div>
+  <div class="dr-body" id="dr-body"></div>
+</aside>
+
+<script src="data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
