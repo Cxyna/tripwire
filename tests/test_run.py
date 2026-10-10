@@ -42,10 +42,14 @@ def test_control_failure_verdict():
 
 def test_summarize_rates():
     s = run.summarize(run.run_set(ATTACKS, set(), fake_call))
-    assert s["techniques"]["override"] == {"n": 2, "success": 1, "rate": 0.5}
+    ov = s["techniques"]["override"]
+    assert (ov["n"], ov["success"], ov["rate"], ov["no_reply"]) == (2, 1, 0.5, 0)
+    assert ov["mentions"] >= ov["success"]
     assert s["techniques"]["roleplay"]["rate"] == 1.0
     assert s["control"] == {"n": 1, "passed": 1, "rate": 1.0}
-    assert s["overall"] == {"n": 3, "success": 2, "rate": pytest.approx(2 / 3)}
+    o = s["overall"]
+    assert (o["n"], o["success"], o["no_reply"]) == (3, 2, 0)
+    assert o["rate"] == pytest.approx(2 / 3)
 
 
 def test_summarize_without_controls():
@@ -506,3 +510,17 @@ def test_failed_call_log_never_contains_key_or_headers(message, tmp_path, capsys
 def test_key_cut_by_truncation_cannot_leak(tmp_path, capsys, monkeypatch):
     out = _fail_with(RuntimeError("p" * 190 + KEY), tmp_path, capsys, monkeypatch)
     assert "fk-SECRET" not in out
+
+
+def test_no_reply_counted_separately_not_blocked():
+    attacks = [dict(ATTACKS[0], id="e1"), dict(ATTACKS[0], id="e2")]
+    s = run.summarize(run.run_set(attacks, set(), lambda e, d: "" if e["id"] == "e1" else GOOD))
+    t = s["techniques"][attacks[0]["technique"]]
+    assert (t["n"], t["no_reply"]) == (1, 1)
+    assert s["overall"]["no_reply"] == 1
+
+
+def test_format_table_has_strict_and_mentions_columns():
+    table = run.format_table(run.summarize(run.run_set(ATTACKS, set(), fake_call)))
+    header = table.splitlines()[0]
+    assert "strict" in header and "mentions" in header and "no reply" in header

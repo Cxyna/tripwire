@@ -13,7 +13,7 @@ from typing import Callable, Optional
 
 import agent
 from defences import ALL_DEFENCES
-from scorer import control_passes, score_attack
+from scorer import control_passes, score_attack, score_mentions
 
 ROOT = Path(__file__).parent
 ATTACK_FILES = [ROOT / "attacks" / "library.json", ROOT / "attacks" / "generated.json"]
@@ -58,6 +58,11 @@ def verdict_for(technique: str, reply: str, marker: Optional[str]) -> str:
     return score_attack(reply, marker)
 
 
+def mentions_for(technique: str, reply: str, marker: Optional[str]) -> Optional[str]:
+    """Lenient verdict (marker or canary anywhere). None for controls."""
+    return None if technique == "control" else score_mentions(reply, marker)
+
+
 def run_set(attacks: list[dict], enabled: set[str], call: CallFn, model: str = "") -> dict:
     results = []
     for attack in attacks:
@@ -70,13 +75,21 @@ def run_set(attacks: list[dict], enabled: set[str], call: CallFn, model: str = "
                 "marker": marker,
                 "reply": reply,
                 "verdict": verdict_for(attack["technique"], reply, marker),
+                "mentions": mentions_for(attack["technique"], reply, marker),
             }
         )
     return {"model": model, "defences": sorted(enabled), "results": results}
 
 
 def rescore(record: dict) -> dict:
-    results = [{**r, "verdict": verdict_for(r["technique"], r["reply"], r.get("marker"))} for r in record["results"]]
+    results = [
+        {
+            **r,
+            "verdict": verdict_for(r["technique"], r["reply"], r.get("marker")),
+            "mentions": mentions_for(r["technique"], r["reply"], r.get("marker")),
+        }
+        for r in record["results"]
+    ]
     return {**record, "results": results}
 
 
@@ -88,17 +101,29 @@ def summarize(record: dict) -> dict:
             controls["n"] += 1
             controls["passed"] += r["verdict"] == "pass"
             continue
-        t = techniques.setdefault(r["technique"], {"n": 0, "success": 0})
+        t = techniques.setdefault(r["technique"], {"n": 0, "success": 0, "mentions": 0, "no_reply": 0})
+        if r["verdict"] == "no reply":
+            t["no_reply"] += 1
+            continue
         t["n"] += 1
         t["success"] += r["verdict"] == "success"
+        t["mentions"] += r.get("mentions") == "success"
     for t in techniques.values():
-        t["rate"] = t["success"] / t["n"]
+        t["rate"] = t["success"] / t["n"] if t["n"] else None
     total = sum(t["n"] for t in techniques.values())
     wins = sum(t["success"] for t in techniques.values())
+    lenient = sum(t["mentions"] for t in techniques.values())
+    silent = sum(t["no_reply"] for t in techniques.values())
     return {
         "techniques": techniques,
         "control": {**controls, "rate": controls["passed"] / controls["n"] if controls["n"] else None},
-        "overall": {"n": total, "success": wins, "rate": wins / total if total else None},
+        "overall": {
+            "n": total,
+            "success": wins,
+            "rate": wins / total if total else None,
+            "mentions": lenient,
+            "no_reply": silent,
+        },
     }
 
 
@@ -119,14 +144,14 @@ def _pct(rate: Optional[float]) -> str:
 
 
 def format_table(summary: dict) -> str:
-    rows = [("technique", "attacks", "succeeded", "rate")]
+    rows = [("technique", "scored", "strict", "strict rate", "mentions", "no reply")]
     for name, t in sorted(summary["techniques"].items()):
-        rows.append((name, str(t["n"]), str(t["success"]), _pct(t["rate"])))
+        rows.append((name, str(t["n"]), str(t["success"]), _pct(t["rate"]), str(t["mentions"]), str(t["no_reply"])))
     o = summary["overall"]
-    rows.append(("ALL ATTACKS", str(o["n"]), str(o["success"]), _pct(o["rate"])))
+    rows.append(("ALL ATTACKS", str(o["n"]), str(o["success"]), _pct(o["rate"]), str(o["mentions"]), str(o["no_reply"])))
     c = summary["control"]
-    rows.append(("control (useful)", str(c["n"]), str(c["passed"]), _pct(c["rate"])))
-    widths = [max(len(r[i]) for r in rows) for i in range(4)]
+    rows.append(("control (useful)", str(c["n"]), str(c["passed"]), _pct(c["rate"]), "", ""))
+    widths = [max(len(r[i]) for r in rows) for i in range(6)]
     lines = ["  ".join(cell.ljust(widths[i]) for i, cell in enumerate(r)) for r in rows]
     lines.insert(1, "  ".join("-" * w for w in widths))
     return "\n".join(lines)
