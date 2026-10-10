@@ -23,14 +23,37 @@ The assistant under test reads one email and returns JSON with a summary, a list
   - `schema`: requires valid JSON with the three expected keys, and otherwise returns an empty reply.
 - **Runner** (`run.py`): runs the library against a chosen set of defences, scores it, saves the record to `results/`, and can replay or compare recorded runs. Model replies are cached on disk in `.cache/`. Without `--live` the runner never calls the API. With `--live` it prints how many uncached calls it will make and asks you to type `y` first. It also enforces a cap on calls per run (`--max-calls`, default 60), runs two calls at a time, and skips (does not score) calls that fail or stay truncated.
 
-## 3. Two front ends
+## 3. Architecture
+
+Three defences act on the email before the model call (`strip_hidden`, `delimiters`, `flag_phrases`). Two act on the model's reply (`output_filter`, `schema`). The reply cache sits in `run.py`, in front of the assistant. Only a cache miss under `--live`, after you type `y`, reaches the API.
+
+```mermaid
+flowchart TD
+    E["Attack and control emails<br/>attacks/library.json"] --> C{"Reply cache<br/>.cache/replies.json"}
+    C -- "hit" --> S
+    C -- "miss, no --live" --> N["Not scored,<br/>no API call"]
+    C -- "miss, --live" --> G{"Type y to continue"}
+    G -- "anything else" --> X["Aborted, no calls made"]
+    G -- "y" --> ID
+
+    subgraph AG["agent.py, one API call per uncached email"]
+        ID["Input defences<br/>strip_hidden, delimiters, flag_phrases"] --> M["Assistant<br/>Qwen3-32B via Featherless<br/>holds fake canary secret"]
+        M --> OD["Output defences<br/>output_filter, schema"]
+    end
+
+    OD -- "reply stored" --> C
+    S["Deterministic scorer<br/>scorer.py"] --> R["Recorded results<br/>results/*.json"]
+    R --> UI["Streamlit app (app.py) and static site (site/)<br/>read only, no API calls"]
+```
+
+## 4. Two front ends
 
 Both front ends read recorded results only. Neither calls the API, and neither needs an API key.
 
 - **Streamlit app** (`app.py`, run with `streamlit run app.py`). Tabs: Overview, Walkthrough, Heatmap, Results, Inspect an attack, How to read this.
 - **Static replay site** (`site/`). Plain HTML, CSS and JavaScript. `make_site_data.py` generates `site/data.js` from the recorded results and the attack library. The site works offline: open `site/index.html` in a browser. It shows recorded results only.
 
-## 4. Results
+## 5. Results
 
 Model: Qwen/Qwen3-32B, one run per configuration. All numbers below come from the files in `results/`.
 
@@ -52,7 +75,7 @@ Model: Qwen/Qwen3-32B, one run per configuration. All numbers below come from th
 
 Per-technique counts for every run are in the Results tab of the app and in `python run.py --replay <file>`.
 
-## 5. Honest limits
+## 6. Honest limits
 
 - **Small sample.** There are 20 hand-written attacks, 4 per technique, so one attack moves a technique's rate by 25 points.
 - **One model, one run per configuration.** Replies are single samples and a rerun could differ. Differences under about 15 points cannot be told from noise. The schema-only and strip-hidden runs scored at or above the no-defence baseline, which shows how noisy single runs are.
@@ -62,7 +85,7 @@ Per-technique counts for every run are in the Results tab of the app and in `pyt
 - **The table does not rank the defences.** It does not show which defence is best in general, and it does not show why any of them helped.
 - **This does not show that any real assistant is safe.** It measures one fictional assistant against 20 emails.
 
-## 6. Security and safety design
+## 7. Security and safety design
 
 - Nothing is sent anywhere except the model call during live runs.
 - Both front ends read only recorded files in the repo.
@@ -70,7 +93,7 @@ Per-technique counts for every run are in the Results tab of the app and in `pyt
 - Email and reply text is escaped or shown as plain text. In the Streamlit app, the single helper that allows raw HTML is covered by a test that scans `app.py`.
 - The static site is guarded by a test (`tests/test_site_scan.py`) that bans `innerHTML` and similar APIs, `eval(`, `document.write`, `@import` and any `http://` or `https://` URL in the site files. The check strips the standard SVG namespace string before searching.
 
-## 7. How to run
+## 8. How to run
 
 ```
 python -m venv .venv
@@ -115,7 +138,7 @@ python run.py --defences all --live --out results/all_defences.json
 
 **Warning:** `--live` sends emails to the model provider with your key. The runner shows the number of calls and waits for `y` before sending. Without `--live`, `run.py` reads only the local cache. A fresh clone has no local cache, so `python run.py` without `--live` scores nothing there. To see the recorded results, use `python run.py --replay results/none.json` (or any other file in `results/`).
 
-## 8. Built during EvoHacks 2026
+## 9. Built during EvoHacks 2026
 
 Started after kickoff on 10 October 2026. The ideas of treating message text as untrusted and checking model output were reused from an earlier project, but no code was copied.
 
@@ -125,6 +148,6 @@ Other AI tools used: none beyond those listed above.
 
 Claude (chat) was used for planning, writing prompts for the coding assistant, and reviewing results.
 
-## 9. Responsible use
+## 10. Responsible use
 
 Tripwire is a measurement tool for your own assistant, not a guarantee of safety. The attack emails are harmless and are only sent to our own fictional assistant. Do not point them at systems you do not own or have permission to test.
