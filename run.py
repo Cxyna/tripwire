@@ -192,16 +192,18 @@ class ReplyCache:
         self.lock = threading.Lock()
         self.data: dict[str, str] = json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else {}
 
-    def _key(self, model: str, system: str, enabled: set[str], email: dict) -> str:
-        blob = json.dumps([model, system, sorted(enabled), email["id"], email["subject"], email["body"]])
-        return hashlib.sha256(blob.encode()).hexdigest()
+    def _key(self, model: str, system: str, enabled: set[str], email: dict, run: int = 0) -> str:
+        parts = [model, system, sorted(enabled), email["id"], email["subject"], email["body"]]
+        if run:
+            parts.append(run)  # run 0 keeps the original key, so existing replies stay valid
+        return hashlib.sha256(json.dumps(parts).encode()).hexdigest()
 
-    def get(self, model: str, system: str, enabled: set[str], email: dict) -> Optional[str]:
-        return self.data.get(self._key(model, system, enabled, email))
+    def get(self, model: str, system: str, enabled: set[str], email: dict, run: int = 0) -> Optional[str]:
+        return self.data.get(self._key(model, system, enabled, email, run))
 
-    def put(self, model: str, system: str, enabled: set[str], email: dict, reply: str) -> None:
+    def put(self, model: str, system: str, enabled: set[str], email: dict, reply: str, run: int = 0) -> None:
         with self.lock:
-            self.data[self._key(model, system, enabled, email)] = reply
+            self.data[self._key(model, system, enabled, email, run)] = reply
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self.path.write_text(json.dumps(self.data), encoding="utf-8")
 
@@ -238,7 +240,7 @@ def describe_error(exc: Exception) -> str:
 
 def fetch_missing(
     missing: list[dict], enabled: set[str], call: Callable[[dict, set], object], cache: ReplyCache,
-    model: str, system: str, workers: int = WORKERS,
+    model: str, system: str, workers: int = WORKERS, run_index: int = 0,
 ) -> tuple[int, int]:
     """Call the API for uncached emails, at most `workers` at a time. Returns (failed, truncated).
 
@@ -262,12 +264,92 @@ def fetch_missing(
         think = "yes" if getattr(result, "think", False) else "no"
         retried = "yes" if getattr(result, "retried", False) else "no"
         print(f"{email['id']}  elapsed={elapsed:.1f}s  finish={finish}  think={think}  retried={retried}")
-        cache.put(model, system, enabled, email, reply)
+        cache.put(model, system, enabled, email, reply, run_index)
         return "ok"
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         outcomes = list(pool.map(one, missing))
     return outcomes.count("failed"), outcomes.count("truncated")
+
+
+def positive(text: str) -> int:
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be 1 or more")
+    return value
+
+
+def run_repeats(
+    attacks: list[dict], enabled: set[str], cache: ReplyCache, model: str, system: str, args: argparse.Namespace,
+) -> int:
+    """N independent live runs, saved as run_1.json..run_N.json. Run k caches under run index k."""
+    out_dir: Path = args.out_dir
+    taken = [out_dir / f"run_{k}.json" for k in range(1, args.repeat + 1) if (out_dir / f"run_{k}.json").exists()]
+    if taken:
+        print(f"error: {taken[0]} already exists; refusing to overwrite", file=sys.stderr)
+        return 1
+    todo = {k: [a for a in attacks if cache.get(model, system, enabled, a, k) is None] for k in range(1, args.repeat + 1)}
+    total = sum(len(v) for v in todo.values())
+    if total > args.max_calls:
+        print(f"error: {total} uncached calls exceeds the cap of {args.max_calls} (--max-calls)", file=sys.stderr)
+        return 1
+    call = None
+    if total:
+        try:
+            call = agent.Agent(agent.make_client()).respond
+        except (RuntimeError, ImportError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(f"{total} uncached API calls across {args.repeat} repeats "
+              f"(cap {args.max_calls}, {WORKERS} at a time, {agent.TIMEOUT_S}s timeout each).")
+        if input("Type y to continue: ").strip().lower() != "y":
+            print("aborted, no calls made.")
+            return 1
+    for k in range(1, args.repeat + 1):
+        failed = truncated = 0
+        if todo[k]:
+            print(f"-- run_{k}: {len(todo[k])} calls")
+            failed, truncated = fetch_missing(todo[k], enabled, call, cache, model, system, run_index=k)
+        done = [a for a in attacks if cache.get(model, system, enabled, a, k) is not None]
+        record = run_set(done, enabled, lambda email, en, k=k: cache.get(model, system, en, email, k), model=model)
+        missing = [a["id"] for a in attacks if a not in done]
+        path = out_dir / f"run_{k}.json"
+        if missing:
+            record = {**record, "incomplete": True, "failed": failed, "truncated": truncated, "missing": missing}
+            print(f"run_{k}: INCOMPLETE ({failed} failed, {truncated} truncated, {len(missing)} not scored)")
+        else:
+            print(f"run_{k}: complete")
+        save_run(record, path)
+        print(f"saved {path}")
+    return 0
+
+
+def summarize_repeats(folder: Path) -> tuple[str, bool]:
+    """Offline per-run strict successes with min, max and mean. Returns (text, found_any)."""
+    runs = sorted(Path(folder).glob("run_*.json"), key=lambda f: int(f.stem.split("_")[1]) if f.stem.split("_")[1].isdigit() else -1)
+    if not runs:
+        return f"no run_*.json files in {folder}", False
+    lines, counts, skipped = [], [], 0
+    for f in runs:
+        record = load_run(f)
+        overall = summarize(rescore(record))["overall"]
+        score = f"strict {overall['success']}/{overall['n']}"
+        if record.get("incomplete"):
+            skipped += 1
+            lines.append(
+                f"{f.stem:<8} INCOMPLETE ({record.get('failed', 0)} failed, {record.get('truncated', 0)} truncated, "
+                f"missing {', '.join(record.get('missing', []))})  {score} (not counted)"
+            )
+        else:
+            counts.append(overall["success"])
+            lines.append(f"{f.stem:<8} {score}")
+    if counts:
+        lines.append(f"min {min(counts)}  max {max(counts)}  mean {sum(counts) / len(counts):.2f}  ({len(counts)} complete runs)")
+    else:
+        lines.append("no complete runs; no statistics")
+    if skipped:
+        lines.append(f"{skipped} incomplete run{'s' if skipped != 1 else ''} excluded from min, max and mean")
+    return "\n".join(lines), True
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -277,10 +359,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--max-calls", type=int, default=MAX_CALLS, help="hard cap on API calls per run")
     p.add_argument("--limit", type=non_negative, help="with --live, make at most N uncached calls")
     p.add_argument("--out", type=Path, help="save results here (default results/<defences>.json)")
+    p.add_argument("--repeat", type=positive, help="with --live and --out-dir, make N independent runs: run_1.json..run_N.json")
+    p.add_argument("--out-dir", type=Path, help="folder for --repeat results (e.g. results/repeats/<name>/)")
+    p.add_argument("--summary", type=Path, metavar="DIR", help="print per-run strict successes for a repeats folder")
     p.add_argument("--replay", type=Path, help="view a recorded results file; no API key needed")
     p.add_argument("--compare", nargs=2, type=Path, metavar=("A", "B"), help="compare two recorded runs")
     args = p.parse_args(argv)
 
+    if args.summary:
+        text, found = summarize_repeats(args.summary)
+        print(text, file=sys.stdout if found else sys.stderr)
+        return 0 if found else 1
     if args.compare:
         a, b = (summarize(rescore(load_run(f))) for f in args.compare)
         print(format_compare(a, b, compare(a, b)))
@@ -297,6 +386,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     model, system = agent.MODEL, agent.SYSTEM_PROMPT
     attacks = load_attacks(ATTACK_FILES)
     cache = ReplyCache(CACHE_PATH)
+    if args.repeat or args.out_dir:
+        if not (args.repeat and args.out_dir and args.live):
+            print("error: --repeat needs --live and --out-dir (and --out-dir needs --repeat)", file=sys.stderr)
+            return 1
+        if args.limit is not None:
+            print("error: --limit cannot be combined with --repeat", file=sys.stderr)
+            return 1
+        return run_repeats(attacks, enabled, cache, model, system, args)
     missing = [a for a in attacks if cache.get(model, system, enabled, a) is None]
     failed = truncated = 0
 
