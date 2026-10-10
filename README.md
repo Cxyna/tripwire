@@ -121,7 +121,9 @@ Started after kickoff on 10 October 2026. The ideas of treating message text as 
 
 Tools used: Python, Streamlit, Qwen3-32B via Featherless, Claude Code.
 
-Other AI tools used: <fill in>
+Other AI tools used: none beyond those listed above.
+
+Claude (chat) was used for planning, writing prompts for the coding assistant, and reviewing results.
 
 ## 9. Responsible use
 
