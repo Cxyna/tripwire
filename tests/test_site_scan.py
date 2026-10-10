@@ -60,3 +60,53 @@ def test_text_contrast_tokens_meet_4_5():
             assert ratio(fg, bg) >= 4.5, (fg, bg, ratio(fg, bg))
     for fg in ("on-accent",):
         assert ratio(fg, "accent-bg") >= 4.5
+
+
+NUMBER_WORDS = (
+    "zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|"
+    "sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|hundred|most|half|majority"
+)
+
+
+def _visible_text(html: str) -> str:
+    """Text a reader sees in index.html: no script, style, svg or tags."""
+    html = re.sub(r"<(script|style|svg)\b.*?</\1>", " ", html, flags=re.S | re.I)
+    return re.sub(r"<[^>]*>", " ", html)
+
+
+def test_index_html_has_no_hardcoded_count_claims():
+    html = _text("index.html")
+    meta = re.search(r'<meta name="description" content="([^"]*)"', html).group(1)
+    for label, text in (("visible text", _visible_text(html)), ("meta description", meta), ("title", re.search(r"<title>(.*?)</title>", html).group(1))):
+        hits = re.findall(rf"\d+|\b(?:{NUMBER_WORDS})\b", text, flags=re.I)
+        assert not hits, f"index.html {label} has count claims that are not generated: {hits}"
+
+
+def test_count_scan_catches_violations():
+    assert re.findall(rf"\d+|\b(?:{NUMBER_WORDS})\b", _visible_text("<p>20 attacks</p>"), flags=re.I)
+    assert re.findall(rf"\d+|\b(?:{NUMBER_WORDS})\b", _visible_text("<h2>Most attacks worked</h2>"), flags=re.I)
+    assert not re.findall(rf"\d+|\b(?:{NUMBER_WORDS})\b", _visible_text('<svg><text>7</text></svg><p>Replay</p>'), flags=re.I)
+
+
+def test_headline_is_filled_from_data_with_textcontent():
+    assert re.search(r'<h2 id="h-head"></h2>', _text("index.html"))
+    js = _text("app.js")
+    assert '$("h-head").textContent' in js
+    parts = (
+        "With no defences, ",
+        " scored attacks succeeded under the strict rule. With all ",
+        'last.defences.length === 5 ? "five " : ""',
+        "defences, ",
+        " did.",
+    )
+    for part in parts:
+        assert part in js
+    assert "sf.success" in js and "sl.success" in js
+
+
+def test_pipeline_packet_is_stopped_for_reduced_motion():
+    css = _text("style.css")
+    block = css.split("@media (prefers-reduced-motion: reduce)", 1)[1]
+    assert ".packet { display: none; }" in block
+    js = _text("app.js")
+    assert 'querySelector(".packet animateMotion")' in js and "removeChild(anim)" in js

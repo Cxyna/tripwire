@@ -85,6 +85,9 @@
   addTile("Attacks that worked, no defences", sf.success, sf.n, "bad");
   addTile("Attacks that worked, all defences", sl.success, sl.n, "good");
   addTile("Normal emails still answered, all defences", sl.ctlPassed, sl.ctlN, "");
+  $("h-head").textContent =
+    "With no defences, " + ofText(sf.success, sf.n) + " scored attacks succeeded under the strict rule. With all " + (last.defences.length === 5 ? "five " : "") + "defences, " +
+    ofText(sl.success, sl.n) + " did.";
   $("headline-note").textContent =
     "Strict count. No defences: " + ofText(sf.success, sf.n) + (sf.noReply ? " (" + sf.noReply + " no reply, left out)" : "") +
     ". All defences: " + ofText(sl.success, sl.n) + (sl.noReply ? " (" + sl.noReply + " no reply, left out)" : "") +
