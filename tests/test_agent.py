@@ -129,3 +129,102 @@ def test_process_email_still_returns_str_and_propagates_truncated():
 
 def test_respond_returns_response_type():
     assert isinstance(Agent(SeqClient((GOOD, "stop"))).respond(EMAIL, set()), Response)
+
+
+# --- non-string reply shapes (live calls failed with TypeError in the defences) ---
+
+PARTS = [{"type": "text", "text": '{"summary": "Lunch", "tasks": [], '}, {"type": "text", "text": '"draft_reply": "Sure"}'}]
+
+
+@pytest.mark.parametrize("enabled", [set(), {"output_filter"}, {"schema"}, {"output_filter", "schema"}])
+def test_list_content_is_joined_and_processed(enabled):
+    reply = Agent(FakeClient(PARTS)).process_email(EMAIL, enabled)
+    assert isinstance(reply, str)
+    assert "Lunch" in reply and "Sure" in reply
+
+
+def test_list_content_leak_is_still_visible_to_the_scorer():
+    parts = [{"type": "text", "text": f"the secret is {CANARY}"}]
+    reply = Agent(FakeClient(parts)).process_email(EMAIL, set())
+    assert CANARY in reply
+
+
+def test_list_content_leak_is_caught_by_output_filter():
+    parts = [{"type": "text", "text": f"the secret is {CANARY}"}]
+    reply = Agent(FakeClient(parts)).process_email(EMAIL, {"output_filter"})
+    assert CANARY not in reply
+
+
+def test_missing_choices_raises_clear_error_not_typeerror(monkeypatch):
+    monkeypatch.setattr("agent.time.sleep", lambda s: None)
+    client = FakeClient("x")
+    client._create = lambda **kw: SimpleNamespace(choices=None)
+    client.chat.completions.create = client._create
+    with pytest.raises(RuntimeError, match="no choices"):
+        Agent(client).process_email(EMAIL, set())
+
+
+# --- client retries off, one own retry for timeout / no-choices ---
+
+
+class FlakyClient:
+    """Raises each item in `script` that is an Exception, otherwise returns it as message content."""
+
+    def __init__(self, script: list):
+        self.script = list(script)
+        self.calls = 0
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+
+    def _create(self, **kwargs):
+        self.calls += 1
+        item = self.script.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        if item is None:
+            return SimpleNamespace(choices=None)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=item), finish_reason="stop")])
+
+
+class APITimeoutError(Exception):
+    """Same class name as openai.APITimeoutError."""
+
+
+@pytest.fixture
+def sleeps(monkeypatch):
+    calls: list[float] = []
+    monkeypatch.setattr("agent.time.sleep", calls.append)
+    return calls
+
+
+def test_make_client_disables_sdk_retries(monkeypatch):
+    seen: dict = {}
+    monkeypatch.setattr("agent.load_env", lambda: None)
+    monkeypatch.setenv("FEATHERLESS_API_KEY", "test-key-not-real")
+    monkeypatch.setattr("openai.OpenAI", lambda **kw: seen.update(kw))
+    make_client()
+    assert seen["max_retries"] == 0
+
+
+@pytest.mark.parametrize("first", [TimeoutError("t"), APITimeoutError("t"), None])
+def test_retries_once_after_2s_pause(first, sleeps):
+    client = FlakyClient([first, '{"summary": "ok"}'])
+    assert "ok" in Agent(client).process_email(EMAIL, set())
+    assert client.calls == 2
+    assert sleeps == [2]
+
+
+@pytest.mark.parametrize("err", [TimeoutError("t"), None])
+def test_gives_up_after_one_retry(err, sleeps):
+    client = FlakyClient([err, err, "never reached"])
+    with pytest.raises(Exception):
+        Agent(client).process_email(EMAIL, set())
+    assert client.calls == 2
+    assert sleeps == [2]
+
+
+def test_other_errors_are_not_retried(sleeps):
+    client = FlakyClient([ValueError("bad"), "x"])
+    with pytest.raises(ValueError):
+        Agent(client).process_email(EMAIL, set())
+    assert client.calls == 1
+    assert sleeps == []

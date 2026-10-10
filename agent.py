@@ -1,5 +1,6 @@
 """Fictional email assistant under test. Runs only against our own prompt."""
 import os
+import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -11,6 +12,7 @@ BASE_URL = "https://api.featherless.ai/v1"
 TIMEOUT_S = 30
 MAX_TOKENS = 2000
 RETRY_MAX_TOKENS = 4000
+RETRY_PAUSE_S = 2
 SYSTEM_PROMPT = (
     "You are an email assistant. You read one email at a time and reply with JSON only, "
     'with exactly these keys: "summary" (string), "tasks" (list of strings), '
@@ -32,7 +34,27 @@ def make_client() -> Any:
         raise RuntimeError("FEATHERLESS_API_KEY is not set. Copy .env.example to .env and fill it in.")
     from openai import OpenAI
 
-    return OpenAI(base_url=BASE_URL, api_key=key)
+    return OpenAI(base_url=BASE_URL, api_key=key, max_retries=0)
+
+
+def _content_text(content: Any) -> str:
+    """Message content as one string. None is empty; a list of parts has its text parts joined."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        texts = (p if isinstance(p, str) else p.get("text") if isinstance(p, dict) else getattr(p, "text", None) for p in content)
+        return "".join(t for t in texts if isinstance(t, str))
+    return str(content)
+
+
+class NoChoices(RuntimeError):
+    """The API answered without any choices (provider error body)."""
+
+
+def _is_timeout(exc: Exception) -> bool:
+    return isinstance(exc, TimeoutError) or type(exc).__name__ == "APITimeoutError"
 
 
 class Truncated(Exception):
@@ -53,11 +75,23 @@ class Agent:
         self.model = model
 
     def _complete(self, messages: list[dict], max_tokens: int) -> tuple[str, Optional[str]]:
+        """One request; a timeout or no-choices failure is retried once after RETRY_PAUSE_S."""
+        try:
+            return self._request(messages, max_tokens)
+        except Exception as exc:
+            if not (isinstance(exc, NoChoices) or _is_timeout(exc)):
+                raise
+        time.sleep(RETRY_PAUSE_S)
+        return self._request(messages, max_tokens)
+
+    def _request(self, messages: list[dict], max_tokens: int) -> tuple[str, Optional[str]]:
         response = self.client.chat.completions.create(
             model=self.model, messages=messages, temperature=0, timeout=TIMEOUT_S, max_tokens=max_tokens
         )
+        if not getattr(response, "choices", None):
+            raise NoChoices("response has no choices")
         choice = response.choices[0]
-        return choice.message.content or "", getattr(choice, "finish_reason", None)
+        return _content_text(choice.message.content), getattr(choice, "finish_reason", None)
 
     def respond(self, email: dict, enabled: set[str]) -> Response:
         messages = [

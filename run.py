@@ -2,6 +2,8 @@
 import argparse
 import hashlib
 import json
+import os
+import re
 import sys
 import threading
 import time
@@ -189,6 +191,26 @@ class ReplyCache:
         return cached
 
 
+SECRET_PATTERNS = [
+    re.compile(r"""['"]?(?:authorization|proxy-authorization|x-api-key|api[-_ ]?key|cookie|set-cookie)['"]?\s*[:=]\s*[^\n,}]*""", re.I),
+    re.compile(r"bearer\s+\S+", re.I),
+    re.compile(r"[A-Za-z0-9_\-.]{32,}"),
+]
+ERROR_DETAIL_MAX = 200
+
+
+def describe_error(exc: Exception) -> str:
+    """Exception class and message for the failed-call log: one line, secrets removed, then cut to 200 chars."""
+    text = str(exc)
+    key = os.environ.get("FEATHERLESS_API_KEY", "").strip()
+    if key:
+        text = text.replace(key, "[redacted]")
+    for pattern in SECRET_PATTERNS:
+        text = pattern.sub("[redacted]", text)
+    text = " ".join(text.split())[:ERROR_DETAIL_MAX]
+    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
+
+
 def fetch_missing(
     missing: list[dict], enabled: set[str], call: Callable[[dict, set], object], cache: ReplyCache,
     model: str, system: str, workers: int = WORKERS,
@@ -207,7 +229,7 @@ def fetch_missing(
             print(f"{email['id']}  truncated after retry, skipped")
             return "truncated"
         except Exception as exc:  # timeout, rate limit, network: skip this email
-            print(f"{email['id']}  failed ({type(exc).__name__}), skipped")
+            print(f"{email['id']}  failed ({describe_error(exc)}), skipped")
             return "failed"
         elapsed = time.monotonic() - start
         reply = result.reply if isinstance(result, agent.Response) else result

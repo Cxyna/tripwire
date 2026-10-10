@@ -459,3 +459,50 @@ def test_live_output_has_no_key(env, monkeypatch, capsys):
     run.main(["--live"])
     captured = capsys.readouterr()
     assert "sk-SECRET-VALUE" not in captured.out + captured.err
+
+
+# --- failed-call log: class + redacted, truncated message ---
+
+KEY = "fk-SECRET-0123456789abcdef"
+
+
+def _fail_with(exc, tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("FEATHERLESS_API_KEY", KEY)
+    cache = run.ReplyCache(tmp_path / "c.json")
+
+    def boom(email, enabled):
+        raise exc
+
+    run.fetch_missing([{"id": "e1", "subject": "s", "body": "b"}], set(), boom, cache, "m", "sys")
+    return capsys.readouterr().out
+
+
+def test_failed_call_logs_class_and_message(tmp_path, capsys, monkeypatch):
+    out = _fail_with(TypeError("'NoneType' object is not subscriptable"), tmp_path, capsys, monkeypatch)
+    assert "e1  failed (TypeError: 'NoneType' object is not subscriptable), skipped" in out
+
+
+def test_failed_call_message_truncated_to_200(tmp_path, capsys, monkeypatch):
+    out = _fail_with(ValueError("x " * 500), tmp_path, capsys, monkeypatch)
+    detail = out.split("ValueError: ", 1)[1].rsplit("), skipped", 1)[0]
+    assert len(detail) <= 200
+
+
+@pytest.mark.parametrize("message", [
+    f"Incorrect API key provided: {KEY}",
+    f"401 Bearer {KEY} rejected",
+    "headers={'Authorization': 'Bearer abc.def-123', 'x-api-key': 'zzz'} refused",
+    "Authorization: Basic dXNlcjpwYXNz",
+    "request failed\nAuthorization: Bearer tok123\nnext line",
+    "token " + "A" * 40,
+])
+def test_failed_call_log_never_contains_key_or_headers(message, tmp_path, capsys, monkeypatch):
+    out = _fail_with(RuntimeError(message), tmp_path, capsys, monkeypatch)
+    for secret in (KEY, "abc.def-123", "zzz", "dXNlcjpwYXNz", "tok123", "A" * 40):
+        assert secret not in out
+    assert out.count("\n") == 1  # one line per failed call
+
+
+def test_key_cut_by_truncation_cannot_leak(tmp_path, capsys, monkeypatch):
+    out = _fail_with(RuntimeError("p" * 190 + KEY), tmp_path, capsys, monkeypatch)
+    assert "fk-SECRET" not in out
