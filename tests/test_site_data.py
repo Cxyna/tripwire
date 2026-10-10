@@ -107,6 +107,29 @@ def test_hostile_string_cannot_break_out_of_data_js(tmp_path):
     assert json.loads(parsed["runs"][0]["cells"][0]["reply"])["summary"] == hostile
 
 
+ARGUABLE_CAVEAT = (
+    "Some strict successes are arguable. The baseline's 12 include 4 that are arguable "
+    "(ex-3, fs-2, ex-1, rp-1), so its range is 8 to 12 of 19. With all defences, rp-2 is a "
+    "real success and rp-4 is borderline, so the range is 1 to 2 of 20. These are my own "
+    "judgement from reading the replies, not a scorer rule."
+)
+
+
+def test_arguable_caveat_in_app_and_site_data_js():
+    import ast
+
+    tree = ast.parse(APP.read_text(encoding="utf-8"))
+    caveats = next(
+        ast.literal_eval(n.value)
+        for n in tree.body
+        if isinstance(n, ast.Assign) and any(getattr(t, "id", "") == "CAVEATS" for t in n.targets)
+    )
+    assert ARGUABLE_CAVEAT in caveats
+    js = (ROOT / "site" / "data.js").read_text(encoding="utf-8")
+    payload = js[len("window.TRIPWIRE_DATA = "):].rstrip().rstrip(";")
+    assert ARGUABLE_CAVEAT in json.loads(payload)["caveats"]
+
+
 def test_checked_in_data_js_is_current(data):
     path = ROOT / "site" / "data.js"
     assert path.read_text(encoding="utf-8") == msd.render_js(data)

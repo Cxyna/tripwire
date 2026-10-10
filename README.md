@@ -96,7 +96,7 @@ Run the tests:
 pytest -q
 ```
 
-The last run printed `278 passed`.
+Run `pytest -q`; all tests should pass.
 
 Replay or compare recorded runs (no API calls):
 
